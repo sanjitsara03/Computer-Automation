@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "open_new_account",
+  "version": 1,
+  "goal": "Log into ParaBank, open a new {account_type} account funded from account {funding_account_id}, and report the new account number shown on the confirmation page.",
+  "surface": {"kind": "web", "entry_path": "/parabank/index.htm"},
+  "params": {},
+  "outputs": {},
+  "steps": [
+    {
+      "id": "s1",
+      "action": "navigate",
+      "path": "/parabank/index.htm",
+      "checkpoint": {"kind": "role_visible", "role": "heading", "name": "Customer Login"}
+    },
+    {
+      "id": "s2",
+      "action": "click",
+      "target": {
+        "primary": {"role": "link", "name": "Register"},
+        "fallback": {"css": "a[href*='register.htm']", "kind": "attribute"}
+      },
+      "checkpoint": {"kind": "role_visible", "role": "heading", "name": "Signing up is easy!"}
+    }
+  ]
+}

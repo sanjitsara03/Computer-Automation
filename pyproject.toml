@@ -1,0 +1,17 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = "Computer-use automation: LLM-driven discovery recorded as typed capabilities, replayed deterministically"
+readme = "README.md"
+authors = [
+    { name = "sanjitsara03", email = "sanjitsara03@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "playwright==1.62",
+    "pydantic>=2.13.5",
+]
+
+[tool.uv]
+#imported from repo root; editable .pth installs are unreliable on macOS
+package = false
