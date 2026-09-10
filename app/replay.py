@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import time
 
@@ -13,7 +14,9 @@ from app.schema import (
     Artifact,
     Checkpoint,
     LiteralValue,
+    ParamRef,
     RoleVisible,
+    SecretRef,
     Step,
     Strict,
     TextMatches,
@@ -63,10 +66,18 @@ class Session:
 
 
 #execution
-def bind_value(value: Value) -> str:
+def bind_value(value: Value, params: dict[str, str], secrets: dict[str, str]) -> str:
     if isinstance(value, LiteralValue):
         return value.literal
-    raise NotImplementedError("param and secret binding not implemented yet")
+    if isinstance(value, ParamRef):
+        if value.param not in params:
+            raise KeyError(f"param not provided: {value.param}")
+        return params[value.param]
+    if isinstance(value, SecretRef):
+        if value.secret not in secrets:
+            raise KeyError(f"secret not provided: {value.secret}")
+        return secrets[value.secret]
+    raise NotImplementedError(f"unknown value type: {type(value).__name__}")
 
 
 def assert_checkpoint(
@@ -89,15 +100,24 @@ def assert_checkpoint(
     elif isinstance(checkpoint, ValueMatches):
         if locator is None or value is None:
             raise ValueError("value_matches requires the acted-on locator and value")
-        expect(locator).to_have_value(value, timeout=timeout_ms)
+        tag = locator.evaluate("el => el.tagName.toLowerCase()")
+        if tag == "select":
+            selected = locator.evaluate("el => el.options[el.selectedIndex].text")
+            if selected != value:
+                raise AssertionError(f"selected option {selected!r}, expected {value!r}")
+        else:
+            expect(locator).to_have_value(value, timeout=timeout_ms)
     else:
         raise NotImplementedError(f"checkpoint not implemented: {type(checkpoint).__name__}")
 
 
-def run_step(session: Session, step: Step) -> str | None:
+def run_step(
+    session: Session, step: Step, params: dict[str, str], secrets: dict[str, str]
+) -> tuple[str | None, tuple[str, str] | None]:
     tier = None
     locator = None
     value = None
+    extracted = None
     if step.action == "navigate":
         session.page.goto(session.base_url + step.path)
     elif step.action == "click":
@@ -105,34 +125,71 @@ def run_step(session: Session, step: Step) -> str | None:
         locator.click()
     elif step.action == "type":
         locator, tier = resolve(session.page, step.target)
-        value = bind_value(step.value)
+        value = bind_value(step.value, params, secrets)
         locator.fill(value)
+    elif step.action == "select":
+        locator, tier = resolve(session.page, step.target)
+        value = bind_value(step.value, params, secrets)
+        locator.select_option(label=value)
+    elif step.action == "extract":
+        assert_checkpoint(session.page, step.checkpoint, step.timeout_ms)
+        locator, tier = resolve(session.page, step.target)
+        text = locator.text_content() or ""
+        match = re.search(step.parse.pattern, text)
+        if match is None:
+            raise ValueError(f"parse {step.parse.pattern!r} found nothing in {text!r}")
+        return tier, (step.output, match.group(0))
     else:
         raise NotImplementedError(f"action not implemented yet: {step.action}")
     assert_checkpoint(session.page, step.checkpoint, step.timeout_ms, locator, value)
-    return tier
+    return tier, extracted
 
 
-def replay(artifact: Artifact, session: Session) -> ReplayResult:
+def replay(
+    artifact: Artifact,
+    session: Session,
+    params: dict[str, str] | None = None,
+    secrets: dict[str, str] | None = None,
+) -> ReplayResult:
+    params = params or {}
+    secrets = secrets or {}
     results: list[StepResult] = []
+    outputs: dict[str, str] = {}
     for step in artifact.steps:
         started = time.monotonic()
         try:
-            tier = run_step(session, step)
+            tier, extracted = run_step(session, step, params, secrets)
+            if extracted is not None:
+                outputs[extracted[0]] = extracted[1]
         except Exception as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             results.append(StepResult(id=step.id, action=step.action, ok=False, ms=elapsed))
+            failure = f"step {step.id} ({step.action}): {type(exc).__name__}: {exc}"
+            for secret_value in secrets.values():
+                failure = failure.replace(secret_value, "[secret]")
             return ReplayResult(
                 ok=False,
                 capability=artifact.name,
                 steps=results,
-                failure=f"step {step.id} ({step.action}): {type(exc).__name__}: {exc}",
+                failure=failure,
             )
         elapsed = int((time.monotonic() - started) * 1000)
         results.append(
             StepResult(id=step.id, action=step.action, ok=True, ms=elapsed, tier=tier)
         )
-    return ReplayResult(ok=True, capability=artifact.name, steps=results)
+    return ReplayResult(ok=True, capability=artifact.name, steps=results, outputs=outputs)
+
+
+def load_env(path: str = ".env") -> dict[str, str]:
+    #.env values, falling back to the process environment
+    env = dict(os.environ)
+    if os.path.exists(path):
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    return env
 
 
 def main() -> None:
@@ -140,11 +197,18 @@ def main() -> None:
     parser.add_argument("artifact")
     parser.add_argument("--base-url", default="http://localhost:8080")
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     args = parser.parse_args()
 
     artifact = load_artifact(args.artifact)
+    params = dict(p.split("=", 1) for p in args.param)
+    secrets = {
+        k[len("SECRET_"):].lower(): v
+        for k, v in load_env().items()
+        if k.startswith("SECRET_")
+    }
     with Session(args.base_url, headless=not args.headed) as session:
-        result = replay(artifact, session)
+        result = replay(artifact, session, params, secrets)
         if args.headed:
             input("press Enter to close the browser ")
     print(result.model_dump_json(indent=2))

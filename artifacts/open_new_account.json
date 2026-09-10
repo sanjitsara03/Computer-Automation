@@ -4,8 +4,15 @@
   "version": 1,
   "goal": "Log into ParaBank, open a new {account_type} account funded from account {funding_account_id}, and report the new account number shown on the confirmation page.",
   "surface": {"kind": "web", "entry_path": "/parabank/index.htm"},
-  "params": {},
-  "outputs": {},
+  "params": {
+    "account_type": {"type": "enum", "enum": ["CHECKING", "SAVINGS"]},
+    "funding_account_id": {"type": "str"},
+    "username": {"type": "str", "secret": true},
+    "password": {"type": "str", "secret": true}
+  },
+  "outputs": {
+    "new_account_id": {"type": "str", "pattern": "^\\d+$"}
+  },
   "steps": [
     {
       "id": "s1",
@@ -15,12 +22,81 @@
     },
     {
       "id": "s2",
+      "action": "type",
+      "target": {
+        "primary_null_reason": "ambiguous:2",
+        "fallback": {"css": "input[name='username']", "kind": "attribute"}
+      },
+      "value": {"secret": "username"},
+      "checkpoint": {"kind": "value_matches"}
+    },
+    {
+      "id": "s3",
+      "action": "type",
+      "target": {
+        "primary_null_reason": "ambiguous:2",
+        "fallback": {"css": "input[name='password']", "kind": "attribute"}
+      },
+      "value": {"secret": "password"},
+      "checkpoint": {"kind": "value_matches"}
+    },
+    {
+      "id": "s4",
       "action": "click",
       "target": {
-        "primary": {"role": "link", "name": "Register"},
-        "fallback": {"css": "a[href*='register.htm']", "kind": "attribute"}
+        "primary": {"role": "button", "name": "Log In"},
+        "fallback": {"css": "input[value='Log In']", "kind": "attribute"}
       },
-      "checkpoint": {"kind": "role_visible", "role": "heading", "name": "Signing up is easy!"}
+      "checkpoint": {"kind": "role_visible", "role": "heading", "name": "Accounts Overview"}
+    },
+    {
+      "id": "s5",
+      "action": "click",
+      "target": {
+        "primary": {"role": "link", "name": "Open New Account"},
+        "fallback": {"css": "a[href*='openaccount.htm']", "kind": "attribute"}
+      },
+      "checkpoint": {"kind": "role_visible", "role": "heading", "name": "Open New Account"}
+    },
+    {
+      "id": "s6",
+      "action": "select",
+      "target": {
+        "primary_null_reason": "empty_name",
+        "fallback": {"css": "#type", "kind": "attribute"}
+      },
+      "value": {"param": "account_type"},
+      "checkpoint": {"kind": "value_matches"}
+    },
+    {
+      "id": "s7",
+      "action": "select",
+      "target": {
+        "primary_null_reason": "empty_name",
+        "fallback": {"css": "#fromAccountId", "kind": "attribute"}
+      },
+      "value": {"param": "funding_account_id"},
+      "checkpoint": {"kind": "value_matches"}
+    },
+    {
+      "id": "s8",
+      "action": "click",
+      "target": {
+        "primary": {"role": "button", "name": "Open New Account"},
+        "fallback": {"css": "input[value='Open New Account']", "kind": "attribute"}
+      },
+      "checkpoint": {"kind": "text_matches", "pattern": "Account Opened!"}
+    },
+    {
+      "id": "s9",
+      "action": "extract",
+      "target": {
+        "primary_null_reason": "empty_name",
+        "fallback": {"css": "#newAccountId", "kind": "attribute"}
+      },
+      "output": "new_account_id",
+      "parse": {"pattern": "\\d+"},
+      "checkpoint": {"kind": "text_matches", "pattern": "Your new account number:\\s*\\d+"}
     }
   ]
 }
