@@ -17,7 +17,7 @@ MODEL = "openai/gpt-5.6-terra"
 BASE_URL = "http://localhost:8080"
 MAX_STEPS = 15
 GOAL = (
-    "Log into ParaBank, open a new SAVINGS account funded from account 12345, "
+    "Log into ParaBank, open a new SAVINGS account funded from account 13122, "
     "and report the new account number."
 )
 
@@ -74,7 +74,8 @@ Rules:
 - Never invent usernames or passwords. For credential fields set value to
   {"secret": "username"} or {"secret": "password"}.
 - When the goal asks you to report a value, "extract" it from the element showing it,
-  then "done"."""
+  then "done". "output" is a NAME for the value (e.g. "new_account_id"), never the
+  value itself."""
 
 
 def take_snapshot(page: Page) -> str:
@@ -151,8 +152,9 @@ def main() -> None:
             try:
                 action = parse_action(raw)
             except Exception as exc:
-                reason = str(exc).splitlines()[0]
-                print(f"[{step}] invalid reply, sent back for correction: {reason}")
+                #keep the lines that name the field, not just the header
+                reason = " ".join(l.strip() for l in str(exc).splitlines()[:3])
+                print(f"[{step}] invalid reply, sent back for correction: {reason[:120]}")
                 messages.append({"role": "assistant", "content": raw})
                 messages.append({
                     "role": "user",
