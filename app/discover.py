@@ -10,16 +10,20 @@ from openai import OpenAI
 from playwright.sync_api import Page, sync_playwright
 from pydantic import model_validator
 
+from app.capture import capture_target
 from app.replay import load_env
 from app.schema import SecretRef, Strict
 
 MODEL = "openai/gpt-5.6-terra"
 BASE_URL = "http://localhost:8080"
 MAX_STEPS = 15
+
+#the capability contract, declared before discovery
+PARAMS = {"account_type": "SAVINGS", "funding_account_id": "13122"}
 GOAL = (
-    "Log into ParaBank, open a new SAVINGS account funded from account 13122, "
-    "and report the new account number."
-)
+    "Log into ParaBank, open a new {account_type} account funded from account "
+    "{funding_account_id}, and report the new account number."
+).format(**PARAMS)
 
 
 #the model's action: a draft step, ref-addressed
@@ -111,6 +115,31 @@ def bind(value: str | SecretRef, secrets: dict[str, str]) -> str:
     return value
 
 
+def record_value(value: str | SecretRef) -> dict:
+    """How a value is written into the artifact: secrets and params as placeholders."""
+    if isinstance(value, SecretRef):
+        return {"secret": value.secret}
+    for param_name, param_value in PARAMS.items():
+        if value == param_value:
+            return {"param": param_name}
+    return {"literal": value}
+
+
+def record_step(n: int, action: ModelAction, page: Page, snapshot: str) -> dict:
+    step: dict = {"id": f"s{n}", "action": action.action}
+    if action.action == "navigate":
+        step["path"] = action.path
+    else:
+        step["target"] = capture_target(page, action.ref, snapshot).model_dump(
+            exclude_none=True, mode="json"
+        )
+    if action.value is not None:
+        step["value"] = record_value(action.value)
+    if action.output is not None:
+        step["output"] = action.output
+    return step
+
+
 def execute(page: Page, action: ModelAction, secrets: dict[str, str]) -> str:
     if action.action == "navigate":
         page.goto(BASE_URL + action.path)
@@ -141,11 +170,13 @@ def main() -> None:
         page = browser.new_page()
         page.goto(BASE_URL + "/parabank/index.htm")
 
+        snapshot = take_snapshot(page)
         messages = [{
             "role": "user",
             "content": f'Your goal, driving a bank web app:\n"{GOAL}"\n\n'
-                       f"{ACTION_RULES}\n\nCurrent page snapshot:\n{take_snapshot(page)}",
+                       f"{ACTION_RULES}\n\nCurrent page snapshot:\n{snapshot}",
         }]
+        recorded: list[dict] = []
 
         for step in range(1, MAX_STEPS + 1):
             raw = ask_model(client, messages)
@@ -166,21 +197,27 @@ def main() -> None:
             if action.action in ("done", "stuck"):
                 break
             try:
+                #capture the target BEFORE acting: acting can change the page
+                draft = record_step(len(recorded) + 1, action, page, snapshot)
                 result = execute(page, action, secrets)
+                recorded.append(draft)
             except Exception as exc:
                 result = f"ACTION FAILED: {type(exc).__name__}: {str(exc).splitlines()[0]}"
             print(f"    -> {result}")
             page.wait_for_timeout(600)
+            snapshot = take_snapshot(page)
             messages.append(
                 {"role": "assistant", "content": action.model_dump_json(exclude_none=True)}
             )
             messages.append({
                 "role": "user",
-                "content": f"result: {result}\n\nCurrent page snapshot:\n{take_snapshot(page)}",
+                "content": f"result: {result}\n\nCurrent page snapshot:\n{snapshot}",
             })
         else:
             print(f"stopped: hit MAX_STEPS ({MAX_STEPS})")
 
+        print(f"\nrecorded {len(recorded)} steps:")
+        print(json.dumps(recorded, indent=2))
         input("browser stays open, press Enter to close ")
         browser.close()
 
