@@ -10,20 +10,23 @@ from openai import OpenAI
 from playwright.sync_api import Page, sync_playwright
 from pydantic import model_validator
 
-from app.capture import capture_target
+from app.capture import _VOLATILE, capture_target
 from app.replay import load_env
-from app.schema import SecretRef, Strict
+from app.schema import Artifact, SecretRef, Strict
 
 MODEL = "openai/gpt-5.6-terra"
 BASE_URL = "http://localhost:8080"
 MAX_STEPS = 15
+ARTIFACT_PATH = "artifacts/open_new_account.json"
 
 #the capability contract, declared before discovery
 PARAMS = {"account_type": "SAVINGS", "funding_account_id": "13122"}
-GOAL = (
+OUTPUTS = {"new_account_id": {"type": "str", "pattern": "^\\d+$"}}
+GOAL_TEMPLATE = (
     "Log into ParaBank, open a new {account_type} account funded from account "
     "{funding_account_id}, and report the new account number."
-).format(**PARAMS)
+)
+GOAL = GOAL_TEMPLATE.format(**PARAMS)
 
 
 #the model's action: a draft step, ref-addressed
@@ -137,7 +140,40 @@ def record_step(n: int, action: ModelAction, page: Page, snapshot: str) -> dict:
         step["value"] = record_value(action.value)
     if action.output is not None:
         step["output"] = action.output
+        step["parse"] = {"pattern": OUTPUTS[action.output]["pattern"].strip("^$")}
     return step
+
+
+def _stable_texts(snapshot: str) -> list[str]:
+    texts = []
+    for line in snapshot.splitlines():
+        if ":" in line:
+            text = line.split(":", 1)[1].strip().strip('"')
+            if text and not _VOLATILE.match(text):
+                texts.append(text)
+    return texts
+
+
+def synthesize_checkpoint(action: ModelAction, draft: dict, before: str, after: str) -> dict:
+    """A verifiable 'did it work' condition, derived from what the action changed."""
+    if action.action in ("type", "select"):
+        return {"kind": "value_matches"}
+    if action.action == "extract":
+        #gate on label AND value shape, so replay cannot read the field too early
+        anchor = draft["target"].get("last", {}).get("anchor_text", "")
+        core = OUTPUTS[action.output]["pattern"].strip("^$")
+        prefix = re.escape(anchor) + r"\s*" if anchor else ""
+        return {"kind": "text_matches", "pattern": prefix + core}
+    #click/navigate: prefer a heading that newly appeared, else the first new stable text
+    heads = lambda s: re.findall(r'- heading "([^"]+)"', s)
+    new_heads = [h for h in heads(after) if h not in heads(before)]
+    if new_heads:
+        return {"kind": "role_visible", "role": "heading", "name": new_heads[0]}
+    seen = set(_stable_texts(before))
+    for text in _stable_texts(after):
+        if text not in seen:
+            return {"kind": "text_matches", "pattern": re.escape(text)}
+    return {"kind": "text_matches", "pattern": re.escape(_stable_texts(after)[0])}
 
 
 def execute(page: Page, action: ModelAction, secrets: dict[str, str]) -> str:
@@ -177,6 +213,7 @@ def main() -> None:
                        f"{ACTION_RULES}\n\nCurrent page snapshot:\n{snapshot}",
         }]
         recorded: list[dict] = []
+        finished = False
 
         for step in range(1, MAX_STEPS + 1):
             raw = ask_model(client, messages)
@@ -195,17 +232,23 @@ def main() -> None:
                 continue
             print(f"[{step}] {action.model_dump_json(exclude_none=True)}")
             if action.action in ("done", "stuck"):
+                finished = action.action == "done"
                 break
+            draft = None
             try:
                 #capture the target BEFORE acting: acting can change the page
                 draft = record_step(len(recorded) + 1, action, page, snapshot)
                 result = execute(page, action, secrets)
-                recorded.append(draft)
             except Exception as exc:
+                draft = None
                 result = f"ACTION FAILED: {type(exc).__name__}: {str(exc).splitlines()[0]}"
             print(f"    -> {result}")
             page.wait_for_timeout(600)
-            snapshot = take_snapshot(page)
+            new_snapshot = take_snapshot(page)
+            if draft is not None:
+                draft["checkpoint"] = synthesize_checkpoint(action, draft, snapshot, new_snapshot)
+                recorded.append(draft)
+            snapshot = new_snapshot
             messages.append(
                 {"role": "assistant", "content": action.model_dump_json(exclude_none=True)}
             )
@@ -216,8 +259,30 @@ def main() -> None:
         else:
             print(f"stopped: hit MAX_STEPS ({MAX_STEPS})")
 
-        print(f"\nrecorded {len(recorded)} steps:")
-        print(json.dumps(recorded, indent=2))
+        print(f"\nrecorded {len(recorded)} steps")
+        if finished and recorded:
+            artifact = {
+                "schema_version": 1,
+                "name": "open_new_account",
+                "version": 2,
+                "goal": GOAL_TEMPLATE,
+                "surface": {"kind": "web", "entry_path": "/parabank/index.htm"},
+                "params": {
+                    "account_type": {"type": "str"},
+                    "funding_account_id": {"type": "str"},
+                    "username": {"type": "str", "secret": True},
+                    "password": {"type": "str", "secret": True},
+                },
+                "outputs": OUTPUTS,
+                "steps": recorded,
+            }
+            Artifact.model_validate(artifact)
+            with open(ARTIFACT_PATH, "w") as f:
+                json.dump(artifact, f, indent=2)
+            print(f"artifact is schema-valid, saved to {ARTIFACT_PATH}")
+        else:
+            print("run did not finish cleanly; artifact NOT saved")
+            print(json.dumps(recorded, indent=2))
         input("browser stays open, press Enter to close ")
         browser.close()
 

@@ -111,6 +111,15 @@ class Parse(Strict):
     _compiles = field_validator("pattern")(_must_compile)
 
 
+class Detector(Strict):
+    """Declared meaning of a known failure: page matches pattern -> named business outcome."""
+
+    pattern: str
+    outcome: str
+
+    _compiles = field_validator("pattern")(_must_compile)
+
+
 #steps
 
 _STEP_SHAPE: dict[str, dict[str, bool]] = {
@@ -131,6 +140,7 @@ class Step(Strict):
     output: str | None = None
     parse: Parse | None = None
     checkpoint: Checkpoint
+    on_fail: list[Detector] | None = None
     timeout_ms: int = 10000
     risk: Literal["safe", "irreversible", "destructive"] = "safe"
 

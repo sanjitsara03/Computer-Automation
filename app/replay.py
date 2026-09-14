@@ -6,6 +6,8 @@ import argparse
 import os
 import re
 import time
+from pathlib import Path
+from typing import Literal, Union
 
 from playwright.sync_api import Page, expect, sync_playwright
 
@@ -34,12 +36,30 @@ class StepResult(Strict):
     ms: int
     tier: str | None = None
 
+class Success(Strict):
+    kind: Literal["success"] = "success"
+
+class BusinessOutcome(Strict):
+    """The app gave a legitimate 'no' the caller needs to know about."""
+    kind: Literal["business"] = "business"
+    name: str
+    step: str
+
+class HardFailure(Strict):
+    kind: Literal["hard_failure"] = "hard_failure"
+    step: str
+    expected: str
+    observed: str
+    screenshot: str | None = None
+
+Outcome = Union[Success, BusinessOutcome, HardFailure]
+
 class ReplayResult(Strict):
     ok: bool
     capability: str
+    outcome: Outcome
     steps: list[StepResult]
     outputs: dict[str, str] = {}
-    failure: str | None = None
 
 #session
 class Session:
@@ -122,15 +142,15 @@ def run_step(
         session.page.goto(session.base_url + step.path)
     elif step.action == "click":
         locator, tier = resolve(session.page, step.target)
-        locator.click()
+        locator.click(timeout=step.timeout_ms)
     elif step.action == "type":
         locator, tier = resolve(session.page, step.target)
         value = bind_value(step.value, params, secrets)
-        locator.fill(value)
+        locator.fill(value, timeout=step.timeout_ms)
     elif step.action == "select":
         locator, tier = resolve(session.page, step.target)
         value = bind_value(step.value, params, secrets)
-        locator.select_option(label=value)
+        locator.select_option(label=value, timeout=step.timeout_ms)
     elif step.action == "extract":
         assert_checkpoint(session.page, step.checkpoint, step.timeout_ms)
         locator, tier = resolve(session.page, step.target)
@@ -145,6 +165,54 @@ def run_step(
     return tier, extracted
 
 
+def describe_checkpoint(checkpoint: Checkpoint) -> str:
+    if isinstance(checkpoint, RoleVisible):
+        return f'{checkpoint.role} "{checkpoint.name}" visible'
+    if isinstance(checkpoint, ValueMatches):
+        return "field holds the entered value"
+    return f"{checkpoint.kind} {checkpoint.pattern!r}"
+
+
+def observe_page(page: Page) -> str:
+    """What the page actually shows, for the failure report."""
+    try:
+        url = re.sub(r";jsessionid=[^\s?#]+", "", page.url)
+        headings = page.get_by_role("heading").all_inner_texts()
+        return f"url: {url}; headings: {[h.strip() for h in headings if h.strip()]}"
+    except Exception as exc:
+        return f"page state unreadable: {type(exc).__name__}"
+
+
+def classify_failure(
+    page: Page, step: Step, exc: Exception, secrets: dict[str, str]
+) -> BusinessOutcome | HardFailure:
+    #known 'no' answers first: the step's declared detectors against the live page
+    if step.on_fail:
+        try:
+            body = page.locator("body").inner_text()
+        except Exception:
+            body = ""
+        for detector in step.on_fail:
+            if re.search(detector.pattern, body):
+                return BusinessOutcome(name=detector.outcome, step=step.id)
+    #unknown: hard failure with evidence, never interpretation
+    Path("evidence").mkdir(exist_ok=True)
+    shot = f"evidence/replay_failure_{step.id}.png"
+    try:
+        page.screenshot(path=shot)
+    except Exception:
+        shot = None
+    observed = f"{type(exc).__name__}: {str(exc).splitlines()[0]}; {observe_page(page)}"
+    for secret_value in secrets.values():
+        observed = observed.replace(secret_value, "[secret]")
+    return HardFailure(
+        step=step.id,
+        expected=describe_checkpoint(step.checkpoint),
+        observed=observed,
+        screenshot=shot,
+    )
+
+
 def replay(
     artifact: Artifact,
     session: Session,
@@ -155,6 +223,8 @@ def replay(
     secrets = secrets or {}
     results: list[StepResult] = []
     outputs: dict[str, str] = {}
+    #every capability starts at its declared entry point
+    session.page.goto(session.base_url + artifact.surface.entry_path)
     for step in artifact.steps:
         started = time.monotonic()
         try:
@@ -164,20 +234,19 @@ def replay(
         except Exception as exc:
             elapsed = int((time.monotonic() - started) * 1000)
             results.append(StepResult(id=step.id, action=step.action, ok=False, ms=elapsed))
-            failure = f"step {step.id} ({step.action}): {type(exc).__name__}: {exc}"
-            for secret_value in secrets.values():
-                failure = failure.replace(secret_value, "[secret]")
             return ReplayResult(
                 ok=False,
                 capability=artifact.name,
+                outcome=classify_failure(session.page, step, exc, secrets),
                 steps=results,
-                failure=failure,
             )
         elapsed = int((time.monotonic() - started) * 1000)
         results.append(
             StepResult(id=step.id, action=step.action, ok=True, ms=elapsed, tier=tier)
         )
-    return ReplayResult(ok=True, capability=artifact.name, steps=results, outputs=outputs)
+    return ReplayResult(
+        ok=True, capability=artifact.name, outcome=Success(), steps=results, outputs=outputs
+    )
 
 
 def load_env(path: str = ".env") -> dict[str, str]:
@@ -188,10 +257,13 @@ def load_env(path: str = ".env") -> dict[str, str]:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
+                k = k.strip()
+                if k in os.environ:
+                    continue  #real environment beats the file
                 v = v.strip()
                 if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
                     v = v[1:-1]
-                env[k.strip()] = v
+                env[k] = v
     return env
 
 
@@ -215,7 +287,9 @@ def main() -> None:
         if args.headed:
             input("press Enter to close the browser ")
     print(result.model_dump_json(indent=2))
-    raise SystemExit(0 if result.ok else 1)
+    #exit codes: 0 success, 2 known business outcome, 1 hard failure
+    codes = {"success": 0, "business": 2, "hard_failure": 1}
+    raise SystemExit(codes[result.outcome.kind])
 
 
 if __name__ == "__main__":

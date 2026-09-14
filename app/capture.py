@@ -25,7 +25,7 @@ def _snapshot_line(snapshot: str, ref: str) -> tuple[str, str, str]:
         anchor = name if name and not _VOLATILE.match(name) else ""
         if not anchor:
             for prev in reversed(lines[:i]):
-                text = prev.split(":", 1)[1].strip() if ":" in prev else ""
+                text = prev.split(":", 1)[1].strip().strip('"') if ":" in prev else ""
                 if text and not _VOLATILE.match(text):
                     anchor = text
                     break
