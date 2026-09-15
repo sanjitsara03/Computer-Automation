@@ -11,6 +11,7 @@ from typing import Literal, Union
 
 from playwright.sync_api import Page, expect, sync_playwright
 
+from app.operator import InterventionRequest, OperatorChannel, TerminalOperator
 from app.resolve import resolve
 from app.schema import (
     Artifact,
@@ -54,12 +55,19 @@ class HardFailure(Strict):
 
 Outcome = Union[Success, BusinessOutcome, HardFailure]
 
+class InterventionRecord(Strict):
+    step: str
+    reason: str
+    decision: str
+    note: str = ""
+
 class ReplayResult(Strict):
     ok: bool
     capability: str
     outcome: Outcome
     steps: list[StepResult]
     outputs: dict[str, str] = {}
+    interventions: list[InterventionRecord] = []
 
 #session
 class Session:
@@ -213,19 +221,66 @@ def classify_failure(
     )
 
 
+def verify_step(session: Session, step: Step, params: dict, secrets: dict) -> None:
+    """Assert a step's checkpoint, e.g. after a human performed the step manually."""
+    locator = None
+    value = None
+    if step.target is not None:
+        locator, _ = resolve(session.page, step.target)
+    if step.value is not None:
+        value = bind_value(step.value, params, secrets)
+    assert_checkpoint(session.page, step.checkpoint, step.timeout_ms, locator, value)
+
+
 def replay(
     artifact: Artifact,
     session: Session,
     params: dict[str, str] | None = None,
     secrets: dict[str, str] | None = None,
+    operator: OperatorChannel | None = None,
+    preapproved: bool = False,
 ) -> ReplayResult:
     params = params or {}
     secrets = secrets or {}
     results: list[StepResult] = []
     outputs: dict[str, str] = {}
+    interventions: list[InterventionRecord] = []
+
+    def failed(outcome) -> ReplayResult:
+        return ReplayResult(ok=False, capability=artifact.name, outcome=outcome,
+                            steps=results, outputs=outputs, interventions=interventions)
+
     #every capability starts at its declared entry point
     session.page.goto(session.base_url + artifact.surface.entry_path)
     for step in artifact.steps:
+        #risky steps need a decision before anything touches the page
+        if step.risk != "safe":
+            if preapproved:
+                interventions.append(InterventionRecord(
+                    step=step.id, reason=f"risk: {step.risk}",
+                    decision="approved", note="pre-approved (unattended)"))
+            elif operator is None:
+                return failed(HardFailure(
+                    step=step.id, expected=f"approval for {step.risk} step",
+                    observed="no operator channel and not pre-approved"))
+            else:
+                answer = operator.request(InterventionRequest(
+                    capability=artifact.name, step=step.id,
+                    reason=f"step is {step.risk}: a human must decide before it runs"))
+                interventions.append(InterventionRecord(
+                    step=step.id, reason=f"risk: {step.risk}",
+                    decision=answer.decision, note=answer.note))
+                if answer.decision == "abort":
+                    return failed(HardFailure(
+                        step=step.id, expected=f"approval for {step.risk} step",
+                        observed="aborted by operator"))
+                if answer.decision == "fixed":
+                    #the human performed the step by hand; verify it like machine work
+                    verify_step(session, step, params, secrets)
+                    results.append(StepResult(
+                        id=step.id, action=step.action, ok=True, ms=0, tier="human"))
+                    continue
+
         started = time.monotonic()
         try:
             tier, extracted = run_step(session, step, params, secrets)
@@ -233,19 +288,32 @@ def replay(
                 outputs[extracted[0]] = extracted[1]
         except Exception as exc:
             elapsed = int((time.monotonic() - started) * 1000)
+            outcome = classify_failure(session.page, step, exc, secrets)
+            if isinstance(outcome, HardFailure) and operator is not None:
+                answer = operator.request(InterventionRequest(
+                    capability=artifact.name, step=step.id, reason="step failed",
+                    expected=outcome.expected, observed=outcome.observed,
+                    screenshot=outcome.screenshot))
+                interventions.append(InterventionRecord(
+                    step=step.id, reason="hard_failure",
+                    decision=answer.decision, note=answer.note))
+                if answer.decision == "fixed":
+                    try:
+                        verify_step(session, step, params, secrets)
+                        results.append(StepResult(
+                            id=step.id, action=step.action, ok=True, ms=elapsed, tier="human"))
+                        continue
+                    except Exception as verify_exc:
+                        outcome = classify_failure(session.page, step, verify_exc, secrets)
             results.append(StepResult(id=step.id, action=step.action, ok=False, ms=elapsed))
-            return ReplayResult(
-                ok=False,
-                capability=artifact.name,
-                outcome=classify_failure(session.page, step, exc, secrets),
-                steps=results,
-            )
+            return failed(outcome)
         elapsed = int((time.monotonic() - started) * 1000)
         results.append(
             StepResult(id=step.id, action=step.action, ok=True, ms=elapsed, tier=tier)
         )
     return ReplayResult(
-        ok=True, capability=artifact.name, outcome=Success(), steps=results, outputs=outputs
+        ok=True, capability=artifact.name, outcome=Success(),
+        steps=results, outputs=outputs, interventions=interventions,
     )
 
 
@@ -273,6 +341,8 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://localhost:8080")
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
+    parser.add_argument("--unattended", action="store_true",
+                        help="no operator; risky steps run on the caller's pre-approval")
     args = parser.parse_args()
 
     artifact = load_artifact(args.artifact)
@@ -282,8 +352,10 @@ def main() -> None:
         for k, v in load_env().items()
         if k.startswith("SECRET_")
     }
+    operator = None if args.unattended else TerminalOperator()
     with Session(args.base_url, headless=not args.headed) as session:
-        result = replay(artifact, session, params, secrets)
+        result = replay(artifact, session, params, secrets,
+                        operator=operator, preapproved=args.unattended)
         if args.headed:
             input("press Enter to close the browser ")
     print(result.model_dump_json(indent=2))

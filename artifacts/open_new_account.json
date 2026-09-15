@@ -233,7 +233,8 @@
         "kind": "role_visible",
         "role": "heading",
         "name": "Account Opened!"
-      }
+      },
+      "risk": "irreversible"
     },
     {
       "id": "s8",
