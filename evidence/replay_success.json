@@ -1,0 +1,69 @@
+{
+  "ok": true,
+  "capability": "open_new_account",
+  "outcome": {
+    "kind": "success"
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "action": "type",
+      "ok": true,
+      "ms": 35,
+      "tier": "fallback"
+    },
+    {
+      "id": "s2",
+      "action": "type",
+      "ok": true,
+      "ms": 14,
+      "tier": "fallback"
+    },
+    {
+      "id": "s3",
+      "action": "click",
+      "ok": true,
+      "ms": 116,
+      "tier": "primary"
+    },
+    {
+      "id": "s4",
+      "action": "click",
+      "ok": true,
+      "ms": 65,
+      "tier": "primary"
+    },
+    {
+      "id": "s5",
+      "action": "select",
+      "ok": true,
+      "ms": 12,
+      "tier": "fallback"
+    },
+    {
+      "id": "s6",
+      "action": "select",
+      "ok": true,
+      "ms": 5,
+      "tier": "fallback"
+    },
+    {
+      "id": "s7",
+      "action": "click",
+      "ok": true,
+      "ms": 67,
+      "tier": "primary"
+    },
+    {
+      "id": "s8",
+      "action": "extract",
+      "ok": true,
+      "ms": 3,
+      "tier": "fallback"
+    }
+  ],
+  "outputs": {
+    "new_account_id": "15453"
+  },
+  "interventions": []
+}

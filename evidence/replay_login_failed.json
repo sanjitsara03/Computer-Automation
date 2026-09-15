@@ -1,0 +1,36 @@
+{
+  "ok": false,
+  "capability": "open_new_account",
+  "outcome": {
+    "kind": "hard_failure",
+    "step": "s3",
+    "expected": "heading \"Account Services\" visible",
+    "observed": "AssertionError: Locator expected to be visible; url: http://localhost:8080/parabank/login.htm; headings: ['Customer Login', 'Error!']",
+    "screenshot": "evidence/replay_failure_s3.png"
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "action": "type",
+      "ok": true,
+      "ms": 37,
+      "tier": "fallback"
+    },
+    {
+      "id": "s2",
+      "action": "type",
+      "ok": true,
+      "ms": 14,
+      "tier": "fallback"
+    },
+    {
+      "id": "s3",
+      "action": "click",
+      "ok": false,
+      "ms": 10062,
+      "tier": null
+    }
+  ],
+  "outputs": {},
+  "interventions": []
+}

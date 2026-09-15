@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Literal
 
 from openai import OpenAI
@@ -11,6 +12,7 @@ from playwright.sync_api import Page, sync_playwright
 from pydantic import model_validator
 
 from app.capture import _VOLATILE, capture_target
+from app.policy import check_action, check_origin, load_policy
 from app.replay import load_env
 from app.schema import Artifact, SecretRef, Strict
 
@@ -91,7 +93,7 @@ def take_snapshot(page: Page) -> str:
     return re.sub(r";jsessionid=[^\s\"'?#&]+", "", snapshot)
 
 
-def ask_model(client: OpenAI, messages: list[dict]) -> str:
+def ask_model(client: OpenAI, messages: list[dict]) -> tuple[str, dict]:
     r = client.chat.completions.create(
         model=MODEL,
         max_tokens=500,
@@ -101,8 +103,9 @@ def ask_model(client: OpenAI, messages: list[dict]) -> str:
         },
         messages=messages,
     )
-    print(f"    [tokens: {r.usage.prompt_tokens} in / {r.usage.completion_tokens} out]")
-    return r.choices[0].message.content.strip()
+    usage = {"in": r.usage.prompt_tokens, "out": r.usage.completion_tokens}
+    print(f"    [tokens: {usage['in']} in / {usage['out']} out]")
+    return r.choices[0].message.content.strip(), usage
 
 
 def parse_action(text: str) -> ModelAction:
@@ -177,7 +180,11 @@ def synthesize_checkpoint(action: ModelAction, draft: dict, before: str, after: 
 
 
 def execute(page: Page, action: ModelAction, secrets: dict[str, str]) -> str:
+    if action.action not in ("done", "stuck"):
+        check_action(POLICY, action.action)
     if action.action == "navigate":
+        if not action.path.startswith("/"):
+            raise PermissionError("navigate paths must be relative to the allowed origin")
         page.goto(BASE_URL + action.path)
         return f"navigated to {action.path}"
     el = page.locator(f"aria-ref={action.ref}")
@@ -196,7 +203,11 @@ def execute(page: Page, action: ModelAction, secrets: dict[str, str]) -> str:
     return f"unknown action {action.action!r}"
 
 
+POLICY = load_policy()
+
+
 def main() -> None:
+    check_origin(POLICY, BASE_URL)
     env = load_env()
     secrets = {k[len("SECRET_"):].lower(): v for k, v in env.items() if k.startswith("SECRET_")}
     client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=env["OPENROUTER_API"])
@@ -213,10 +224,13 @@ def main() -> None:
                        f"{ACTION_RULES}\n\nCurrent page snapshot:\n{snapshot}",
         }]
         recorded: list[dict] = []
+        usage_log: list[dict] = []
+        final_action = None
         finished = False
 
         for step in range(1, MAX_STEPS + 1):
-            raw = ask_model(client, messages)
+            raw, usage = ask_model(client, messages)
+            usage_log.append(usage)
             try:
                 action = parse_action(raw)
             except Exception as exc:
@@ -233,6 +247,7 @@ def main() -> None:
             print(f"[{step}] {action.model_dump_json(exclude_none=True)}")
             if action.action in ("done", "stuck"):
                 finished = action.action == "done"
+                final_action = json.loads(action.model_dump_json(exclude_none=True))
                 break
             draft = None
             try:
@@ -260,6 +275,24 @@ def main() -> None:
             print(f"stopped: hit MAX_STEPS ({MAX_STEPS})")
 
         print(f"\nrecorded {len(recorded)} steps")
+
+        #evidence: the verbatim conversation is the proof the LLM run was real
+        evidence_dir = Path("evidence/discovery_open_new_account")
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        transcript = {
+            "model": MODEL,
+            "goal": GOAL,
+            "params": PARAMS,
+            "finished": finished,
+            "final_action": final_action,
+            "usage_per_call": usage_log,
+            "recorded_step_count": len(recorded),
+            "messages": messages,
+        }
+        with open(evidence_dir / "log.json", "w") as f:
+            json.dump(transcript, f, indent=2)
+        print(f"evidence saved to {evidence_dir}/log.json")
+
         if finished and recorded:
             artifact = {
                 "schema_version": 1,

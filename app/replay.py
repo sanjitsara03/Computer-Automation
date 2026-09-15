@@ -12,6 +12,7 @@ from typing import Literal, Union
 from playwright.sync_api import Page, expect, sync_playwright
 
 from app.operator import InterventionRequest, OperatorChannel, TerminalOperator
+from app.policy import Policy, check_action, check_origin, load_policy
 from app.resolve import resolve
 from app.schema import (
     Artifact,
@@ -239,9 +240,12 @@ def replay(
     secrets: dict[str, str] | None = None,
     operator: OperatorChannel | None = None,
     preapproved: bool = False,
+    policy: Policy | None = None,
 ) -> ReplayResult:
     params = params or {}
     secrets = secrets or {}
+    policy = policy or load_policy()
+    check_origin(policy, session.base_url)
     results: list[StepResult] = []
     outputs: dict[str, str] = {}
     interventions: list[InterventionRecord] = []
@@ -253,8 +257,14 @@ def replay(
     #every capability starts at its declared entry point
     session.page.goto(session.base_url + artifact.surface.entry_path)
     for step in artifact.steps:
+        check_action(policy, step.action)
+        handling = policy.risk[step.risk]
+        if handling == "block":
+            return failed(HardFailure(
+                step=step.id, expected="a step class the policy permits",
+                observed=f"policy blocks '{step.risk}' steps outright"))
         #risky steps need a decision before anything touches the page
-        if step.risk != "safe":
+        if handling == "require_confirmation":
             if preapproved:
                 interventions.append(InterventionRecord(
                     step=step.id, reason=f"risk: {step.risk}",
@@ -343,6 +353,8 @@ def main() -> None:
     parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--unattended", action="store_true",
                         help="no operator; risky steps run on the caller's pre-approval")
+    parser.add_argument("--evidence", metavar="NAME",
+                        help="also write the result JSON to evidence/NAME.json")
     args = parser.parse_args()
 
     artifact = load_artifact(args.artifact)
@@ -359,6 +371,10 @@ def main() -> None:
         if args.headed:
             input("press Enter to close the browser ")
     print(result.model_dump_json(indent=2))
+    if args.evidence:
+        Path("evidence").mkdir(exist_ok=True)
+        Path(f"evidence/{args.evidence}.json").write_text(result.model_dump_json(indent=2))
+        print(f"evidence saved to evidence/{args.evidence}.json")
     #exit codes: 0 success, 2 known business outcome, 1 hard failure
     codes = {"success": 0, "business": 2, "hard_failure": 1}
     raise SystemExit(codes[result.outcome.kind])

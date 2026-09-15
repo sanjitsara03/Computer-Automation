@@ -1,0 +1,12 @@
+{
+  "allowed_origins": [
+    "http://localhost:8080",
+    "https://parabank.parasoft.com"
+  ],
+  "allowed_actions": ["navigate", "click", "type", "select", "extract"],
+  "risk": {
+    "safe": "allow",
+    "irreversible": "require_confirmation",
+    "destructive": "block"
+  }
+}
