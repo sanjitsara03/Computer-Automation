@@ -1,0 +1,76 @@
+{
+  "ok": true,
+  "capability": "open_new_account",
+  "outcome": {
+    "kind": "success"
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "action": "type",
+      "ok": true,
+      "ms": 38,
+      "tier": "fallback"
+    },
+    {
+      "id": "s2",
+      "action": "type",
+      "ok": true,
+      "ms": 15,
+      "tier": "fallback"
+    },
+    {
+      "id": "s3",
+      "action": "click",
+      "ok": true,
+      "ms": 250,
+      "tier": "primary"
+    },
+    {
+      "id": "s4",
+      "action": "click",
+      "ok": true,
+      "ms": 160,
+      "tier": "primary"
+    },
+    {
+      "id": "s5",
+      "action": "select",
+      "ok": true,
+      "ms": 15,
+      "tier": "fallback"
+    },
+    {
+      "id": "s6",
+      "action": "select",
+      "ok": true,
+      "ms": 135,
+      "tier": "fallback"
+    },
+    {
+      "id": "s7",
+      "action": "click",
+      "ok": true,
+      "ms": 103,
+      "tier": "primary"
+    },
+    {
+      "id": "s8",
+      "action": "extract",
+      "ok": true,
+      "ms": 10,
+      "tier": "fallback"
+    }
+  ],
+  "outputs": {
+    "new_account_id": "18228"
+  },
+  "interventions": [
+    {
+      "step": "s7",
+      "reason": "risk: irreversible",
+      "decision": "approved",
+      "note": "pre-approved (unattended)"
+    }
+  ]
+}

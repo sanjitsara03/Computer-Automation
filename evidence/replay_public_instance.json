@@ -1,0 +1,57 @@
+{
+  "ok": false,
+  "capability": "open_new_account",
+  "outcome": {
+    "kind": "hard_failure",
+    "step": "s6",
+    "expected": "field holds the entered value",
+    "observed": "TimeoutError: Locator.select_option: Timeout 10000ms exceeded.; url: https://parabank.parasoft.com/parabank/openaccount.htm; headings: ['Account Services', 'Open New Account']",
+    "screenshot": "evidence/replay_failure_s6.png"
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "action": "type",
+      "ok": true,
+      "ms": 34,
+      "tier": "fallback"
+    },
+    {
+      "id": "s2",
+      "action": "type",
+      "ok": true,
+      "ms": 18,
+      "tier": "fallback"
+    },
+    {
+      "id": "s3",
+      "action": "click",
+      "ok": true,
+      "ms": 342,
+      "tier": "primary"
+    },
+    {
+      "id": "s4",
+      "action": "click",
+      "ok": true,
+      "ms": 98,
+      "tier": "primary"
+    },
+    {
+      "id": "s5",
+      "action": "select",
+      "ok": true,
+      "ms": 13,
+      "tier": "fallback"
+    },
+    {
+      "id": "s6",
+      "action": "select",
+      "ok": false,
+      "ms": 10008,
+      "tier": null
+    }
+  ],
+  "outputs": {},
+  "interventions": []
+}
